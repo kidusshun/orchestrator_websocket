@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>WebRTC Test</title>
+    <style>
+      .video-container {
+        display: flex;
+        flex-direction: row;
+      }
+      video {
+        width: 400px;
+        height: 300px;
+        border: 1px solid black;
+        margin: 5px;
+      }
+      #results {
+        margin-top: 20px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        min-height: 100px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>WebRTC Test with Face Recognition and Voice Transcription</h2>
+    <div class="video-container">
+      <div>
+        <h3>Local Video</h3>
+        <video id="localVideo" autoplay playsinline></video>
+      </div>
+      <div>
+        <h3>Remote Video (Processed)</h3>
+        <video id="remoteVideo" autoplay playsinline></video>
+      </div>
+    </div>
+    <button onclick="startCall()">Start Call</button>
+    <div id="results">
+      <h3>Recognition Results</h3>
+      <div id="faceResults">Face recognition: waiting for results...</div>
+      <div id="audioResults">Audio transcription: waiting for results...</div>
+    </div>
+
+    <script>
+      const pc = new RTCPeerConnection();
+      let dataChannel = null;
+
+      async function startCall() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        document.getElementById("localVideo").srcObject = stream;
+        stream.getTracks().forEach((track) => {
+          console.log(`Adding ${track.kind} track`);
+          pc.addTrack(track, stream);
+        });
+
+        if (!stream.getAudioTracks().length) {
+          console.error("No audio track available in the stream.");
+          alert(
+            "Audio not detected. Please ensure your microphone is connected and allowed."
+          );
+        }
+
+        pc.ontrack = (event) => {
+          document.getElementById("remoteVideo").srcObject = event.streams[0];
+        };
+
+        // Set up data channel for receiving results
+        dataChannel = pc.createDataChannel("results");
+        dataChannel.onopen = () => {
+          console.log("Data channel is open");
+          // Request results regularly
+          setInterval(() => {
+            if (dataChannel.readyState === "open") {
+              dataChannel.send("get_results");
+            }
+          }, 1000);
+        };
+
+        dataChannel.onmessage = (event) => {
+          const results = JSON.parse(event.data);
+
+          // Update face recognition results
+          if (results.face) {
+            let faceHtml = "<h3>Face Recognition:</h3><ul>";
+            for (const [person, confidence] of Object.entries(results.face)) {
+              faceHtml += `<li>${person}: ${confidence.toFixed(
+                2
+              )}% confidence</li>`;
+            }
+            faceHtml += "</ul>";
+            document.getElementById("faceResults").innerHTML = faceHtml;
+          }
+
+          // Update audio transcription results
+          if (results.audio) {
+            const transcription =
+              results.audio.transcription || "No transcription available";
+            const confidence = results.audio.confidence || "N/A";
+            document.getElementById(
+              "audioResults"
+            ).innerHTML = `<h3>Audio Transcription:</h3>
+               <p>${transcription}</p>
+               <p>Confidence: ${confidence}%</p>`;
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const response = await fetch("http://127.0.0.1:8004/offer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+        });
+
+        const answer = await response.json();
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    </script>
+  </body>
+</html>
