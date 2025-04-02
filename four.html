@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Media WebSocket Client</title>
+    <style>
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .video-container {
+        margin: 20px 0;
+      }
+      .controls {
+        margin: 20px 0;
+      }
+      button {
+        padding: 10px 15px;
+        margin-right: 10px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      #startButton {
+        background-color: #4caf50;
+        color: white;
+        border: none;
+      }
+      #stopButton {
+        background-color: #f44336;
+        color: white;
+        border: none;
+        display: none;
+      }
+      .status {
+        margin-top: 10px;
+        padding: 8px;
+        border-radius: 4px;
+      }
+      .connected {
+        background-color: #e7f7e7;
+        color: #2e7d32;
+      }
+      .disconnected {
+        background-color: #ffebee;
+        color: #c62828;
+      }
+      #results {
+        margin-top: 20px;
+        border: 1px solid #ddd;
+        padding: 10px;
+        border-radius: 4px;
+        min-height: 100px;
+        background-color: #f5f5f5;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .response-container {
+        margin-bottom: 15px;
+        padding: 10px;
+        background-color: #fff;
+        border-radius: 4px;
+        border-left: 4px solid #2196f3;
+      }
+      .response-timestamp {
+        font-size: 12px;
+        color: #666;
+        margin-bottom: 5px;
+      }
+      .response-audio {
+        width: 100%;
+        margin-top: 8px;
+      }
+      .no-responses {
+        padding: 15px;
+        color: #757575;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Media WebSocket Client</h2>
+
+      <div class="controls">
+        <button id="startButton">Start Connection</button>
+        <button id="stopButton">Stop Connection</button>
+        <div id="connectionStatus" class="status disconnected">
+          Disconnected
+        </div>
+      </div>
+
+      <div class="video-container">
+        <!-- Video element to preview the camera stream -->
+        <video
+          id="video"
+          autoplay
+          playsinline
+          style="width: 320px; height: 240px; border: 1px solid black"
+        ></video>
+      </div>
+
+      <div id="results">
+        <h3>Responses:</h3>
+        <div id="responsesContainer">
+          <div class="no-responses">No responses yet</div>
+        </div>
+      </div>
+
+      <!-- Hidden canvas for capturing video frames -->
+      <canvas
+        id="canvas"
+        width="320"
+        height="240"
+        style="display: none"
+      ></canvas>
+    </div>
+
+    <script>
+      // Global variables
+      let ws = null;
+      let mediaStream = null;
+      let sendInterval = null;
+      let audioContext = null;
+      let audioProcessor = null;
+      const audioBuffer = []; // Buffer to accumulate Int16Array chunks
+      let responseCount = 0;
+
+      let isSpeaking = false;
+      let silenceStart = null;
+      let isEndOfSpeech = false;
+
+      // DOM elements
+      const startButton = document.getElementById("startButton");
+      const stopButton = document.getElementById("stopButton");
+      const connectionStatus = document.getElementById("connectionStatus");
+      const video = document.getElementById("video");
+      const responsesContainer = document.getElementById("responsesContainer");
+
+      function getRMS(inputData) {
+        let sum = 0.0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
+        }
+        return Math.sqrt(sum / inputData.length);
+      }
+
+      // Helper function to convert ArrayBuffer/Uint8Array to Base64 string
+      function arrayBufferToBase64(buffer) {
+        let binary = "";
+        let bytes = new Uint8Array(buffer);
+        let len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        return window.btoa(binary);
+      }
+
+      // Function to combine buffered audio data into a single Int16Array
+      function combineAudioBuffers(buffers) {
+        let totalLength = buffers.reduce((acc, curr) => acc + curr.length, 0);
+        let result = new Int16Array(totalLength);
+        let offset = 0;
+        buffers.forEach((buf) => {
+          result.set(buf, offset);
+          offset += buf.length;
+        });
+        return result;
+      }
+
+      // Format current time for display
+      function formatTime() {
+        const now = new Date();
+        return now.toLocaleTimeString();
+      }
+
+      // Start the WebSocket connection and media streaming
+      async function startConnection() {
+        try {
+          // Clear previous responses
+          responsesContainer.innerHTML =
+            '<div class="no-responses">No responses yet</div>';
+          responseCount = 0;
+
+          // Get media stream
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+
+          // Display the video stream
+          video.srcObject = mediaStream;
+
+          // Open WebSocket connection
+          ws = new WebSocket("ws://localhost:8004/ws/media");
+
+          ws.onopen = () => {
+            console.log("WebSocket connection established");
+            connectionStatus.textContent = "Connected";
+            connectionStatus.className = "status connected";
+            startButton.style.display = "none";
+            stopButton.style.display = "inline-block";
+
+            // Set up audio processing
+            setupAudioProcessing();
+
+            // Set up interval to send data
+            setupSendInterval();
+          };
+
+          ws.onmessage = (event) => {
+            console.log("Received response from server");
+
+            // Check if the response is binary (audio data) or text (JSON)
+            if (event.data instanceof Blob) {
+              // Handle binary audio data
+              handleAudioResponse(event.data);
+            } else {
+              // Handle JSON data (status updates)
+              try {
+                const results = JSON.parse(event.data);
+                addJsonResponse(results);
+              } catch (e) {
+                console.error("Error parsing results:", e);
+                addTextResponse("Received text response: " + event.data);
+              }
+            }
+          };
+
+          ws.onclose = () => {
+            console.log("WebSocket connection closed");
+            stopConnection();
+          };
+
+          ws.onerror = (error) => {
+            console.error("WebSocket error:", error);
+            stopConnection();
+          };
+        } catch (error) {
+          console.error("Error starting connection:", error);
+          connectionStatus.textContent = "Error: " + error.message;
+          connectionStatus.className = "status disconnected";
+        }
+      }
+
+      // Handle audio response from server
+      function handleAudioResponse(blobData) {
+        responseCount++;
+
+        // Remove "No responses yet" message if it's the first response
+        if (responseCount === 1) {
+          responsesContainer.innerHTML = "";
+        }
+
+        // Create a URL for the audio blob
+        const audioUrl = URL.createObjectURL(blobData);
+
+        // Create a new response container
+        const responseDiv = document.createElement("div");
+        responseDiv.className = "response-container";
+
+        // Add timestamp
+        const timestamp = document.createElement("div");
+        timestamp.className = "response-timestamp";
+        timestamp.textContent = formatTime();
+        responseDiv.appendChild(timestamp);
+
+        // Add label
+        const label = document.createElement("div");
+        label.textContent = `Response #${responseCount}`;
+        responseDiv.appendChild(label);
+
+        // Create new audio element
+        const audioElement = document.createElement("audio");
+        audioElement.controls = true;
+        audioElement.className = "response-audio";
+        audioElement.src = audioUrl;
+        responseDiv.appendChild(audioElement);
+
+        // Add the new response at the top
+        responsesContainer.insertBefore(
+          responseDiv,
+          responsesContainer.firstChild
+        );
+
+        // Play the audio
+        audioElement.play().catch((e) => {
+          console.error("Error playing audio:", e);
+        });
+      }
+
+      // Add JSON response
+      function addJsonResponse(jsonData) {
+        responseCount++;
+
+        // Remove "No responses yet" message if it's the first response
+        if (responseCount === 1) {
+          responsesContainer.innerHTML = "";
+        }
+
+        // Create a new response container
+        const responseDiv = document.createElement("div");
+        responseDiv.className = "response-container";
+
+        // Add timestamp
+        const timestamp = document.createElement("div");
+        timestamp.className = "response-timestamp";
+        timestamp.textContent = formatTime();
+        responseDiv.appendChild(timestamp);
+
+        // Add content
+        const content = document.createElement("pre");
+        content.textContent = JSON.stringify(jsonData, null, 2);
+        responseDiv.appendChild(content);
+
+        // Add the new response at the top
+        responsesContainer.insertBefore(
+          responseDiv,
+          responsesContainer.firstChild
+        );
+      }
+
+      // Add text response
+      function addTextResponse(text) {
+        responseCount++;
+
+        // Remove "No responses yet" message if it's the first response
+        if (responseCount === 1) {
+          responsesContainer.innerHTML = "";
+        }
+
+        // Create a new response container
+        const responseDiv = document.createElement("div");
+        responseDiv.className = "response-container";
+
+        // Add timestamp
+        const timestamp = document.createElement("div");
+        timestamp.className = "response-timestamp";
+        timestamp.textContent = formatTime();
+        responseDiv.appendChild(timestamp);
+
+        // Add content
+        const content = document.createElement("div");
+        content.textContent = text;
+        responseDiv.appendChild(content);
+
+        // Add the new response at the top
+        responsesContainer.insertBefore(
+          responseDiv,
+          responsesContainer.firstChild
+        );
+      }
+
+      // Stop the WebSocket connection and media streaming
+      function stopConnection() {
+        // Clear send interval
+        if (sendInterval) {
+          clearInterval(sendInterval);
+          sendInterval = null;
+        }
+
+        // Close WebSocket
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+
+        // Stop audio processing
+        if (audioProcessor && audioContext) {
+          audioProcessor.disconnect();
+          audioContext.close();
+          audioProcessor = null;
+          audioContext = null;
+        }
+
+        // Stop media stream
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          video.srcObject = null;
+          mediaStream = null;
+        }
+
+        // Reset UI
+        connectionStatus.textContent = "Disconnected";
+        connectionStatus.className = "status disconnected";
+        startButton.style.display = "inline-block";
+        stopButton.style.display = "none";
+
+        // Clear audio buffer
+        audioBuffer.length = 0;
+      }
+
+      // Set up audio processing
+      function setupAudioProcessing() {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(mediaStream);
+        audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        source.connect(audioProcessor);
+        audioProcessor.connect(audioContext.destination);
+
+        audioProcessor.onaudioprocess = (event) => {
+          // Get audio samples from channel 0
+          const inputData = event.inputBuffer.getChannelData(0);
+          // Convert Float32 samples (-1 to 1) to Int16 samples
+          let buffer = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            let s = Math.max(-1, Math.min(1, inputData[i]));
+            buffer[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          audioBuffer.push(buffer);
+
+          const rms = getRMS(inputData);
+          const silenceThreshold = 0.01;
+          const silenceDuration = 1000;
+
+          if (rms > silenceThreshold) {
+            isSpeaking = true;
+            silenceStart = null;
+            isEndOfSpeech = false;
+          } else if (isSpeaking) {
+            if (!silenceStart) {
+              silenceStart = Date.now();
+            } else if (Date.now() - silenceStart > silenceDuration) {
+              // Detected EOS
+              isEndOfSpeech = true;
+              isSpeaking = false;
+              silenceStart = null;
+            }
+          }
+        };
+      }
+
+      // Set up interval to send data
+      function setupSendInterval() {
+        sendInterval = setInterval(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+          // Combine and clear audio buffer
+          if (audioBuffer.length === 0) return;
+          const combinedAudio = combineAudioBuffers(audioBuffer);
+          audioBuffer.length = 0; // clear array
+
+          // Convert combined audio (Int16Array) to Uint8Array then to Base64
+          const audioUint8 = new Uint8Array(combinedAudio.buffer);
+          const audioBase64 = arrayBufferToBase64(audioUint8);
+
+          // Capture a video frame using a canvas
+          const canvas = document.getElementById("canvas");
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+          // Convert canvas image to JPEG data URL and remove the prefix
+          const dataUrl = canvas.toDataURL("image/jpeg");
+          const videoBase64 = dataUrl.split(",")[1];
+
+          // Construct a JSON payload with both audio and video
+          const payload = {
+            audio: audioBase64,
+            video: videoBase64,
+            is_end: isEndOfSpeech,
+          };
+
+          // Send the JSON payload over the WebSocket
+          ws.send(JSON.stringify(payload));
+          console.log("Sent combined audio and video payload");
+        }, 5000); // every 5 seconds
+      }
+
+      // Event listeners for buttons
+      startButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        startConnection();
+      });
+      stopButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        stopConnection();
+      });
+    </script>
+  </body>
+</html>

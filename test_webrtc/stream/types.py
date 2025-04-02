@@ -9,6 +9,7 @@ class VoiceRecognitionResponse(BaseModel):
 class FaceRecognitionResponse(BaseModel):
     userid: str
     score: float
+    is_new: bool
 
 
 class GenerateRequest(BaseModel):
