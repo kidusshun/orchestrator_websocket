@@ -411,7 +411,7 @@
 
           const rms = getRMS(inputData);
           const silenceThreshold = 0.01;
-          const silenceDuration = 1000;
+          const silenceDuration = 500;
 
           if (rms > silenceThreshold) {
             isSpeaking = true;
@@ -425,44 +425,52 @@
               isEndOfSpeech = true;
               isSpeaking = false;
               silenceStart = null;
+
+              sendMediaData(true);
             }
           }
         };
       }
 
+      function sendMediaData(isEnd) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        // Only send if we have audio data
+        if (audioBuffer.length === 0) return;
+
+        // Combine and clear audio buffer
+        const combinedAudio = combineAudioBuffers(audioBuffer);
+        audioBuffer.length = 0; // clear array
+
+        // Convert combined audio (Int16Array) to Uint8Array then to Base64
+        const audioUint8 = new Uint8Array(combinedAudio.buffer);
+        const audioBase64 = arrayBufferToBase64(audioUint8);
+
+        // Capture a video frame using a canvas
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Convert canvas image to JPEG data URL and remove the prefix
+        const dataUrl = canvas.toDataURL("image/jpeg");
+        const videoBase64 = dataUrl.split(",")[1];
+
+        // Construct a JSON payload with both audio and video
+        const payload = {
+          audio: audioBase64,
+          video: videoBase64,
+          is_end: isEnd,
+        };
+
+        // Send the JSON payload over the WebSocket
+        ws.send(JSON.stringify(payload));
+        console.log("Sent combined audio and video payload, is_end:", isEnd);
+      }
+
       // Set up interval to send data
       function setupSendInterval() {
         sendInterval = setInterval(() => {
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-          // Combine and clear audio buffer
-          if (audioBuffer.length === 0) return;
-          const combinedAudio = combineAudioBuffers(audioBuffer);
-          audioBuffer.length = 0; // clear array
-
-          // Convert combined audio (Int16Array) to Uint8Array then to Base64
-          const audioUint8 = new Uint8Array(combinedAudio.buffer);
-          const audioBase64 = arrayBufferToBase64(audioUint8);
-
-          // Capture a video frame using a canvas
-          const canvas = document.getElementById("canvas");
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-          // Convert canvas image to JPEG data URL and remove the prefix
-          const dataUrl = canvas.toDataURL("image/jpeg");
-          const videoBase64 = dataUrl.split(",")[1];
-
-          // Construct a JSON payload with both audio and video
-          const payload = {
-            audio: audioBase64,
-            video: videoBase64,
-            is_end: isEndOfSpeech,
-          };
-
-          // Send the JSON payload over the WebSocket
-          ws.send(JSON.stringify(payload));
-          console.log("Sent combined audio and video payload");
+          sendMediaData(isEndOfSpeech);
         }, 5000); // every 5 seconds
       }
 

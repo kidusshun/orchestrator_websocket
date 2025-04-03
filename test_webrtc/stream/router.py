@@ -114,9 +114,8 @@ async def websocket_media(websocket: WebSocket):
 
             audio_payload = data.get("audio")
             video_payload = data.get("video")
-            is_end = data.get("is_end", False)
             
-            response = await request_handler(audio_payload, video_payload, is_end)
+            response = await request_handler(audio_payload, video_payload)
             if response:
                 await send_results_periodically(websocket, response)
 

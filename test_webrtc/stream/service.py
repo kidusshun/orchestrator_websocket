@@ -8,8 +8,11 @@ import httpx
 import io
 from PIL import Image
 import wave
-from .utils import answer_user_query, generate_tts
+from .utils import answer_user_query, generate_tts, add_voice_user, add_face_user
 from .types import GenerateRequest, VoiceRecognitionResponse, FaceRecognitionResponse
+from fastapi import UploadFile
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from io import BytesIO
 
 
 class ProcessRequest:
@@ -17,7 +20,9 @@ class ProcessRequest:
         self.transcription = ""
         self.voice_user = []
         self.face_user = []
-
+        self.user_id = None
+        self.image = None
+        self.audio = None
     def convert_to_wav(self,audio_data: bytes, channels: int = 1, sampwidth: int = 2, framerate: int = 48000) -> bytes:
         """
         Convert raw PCM audio data to a WAV file in memory.
@@ -44,15 +49,15 @@ class ProcessRequest:
             wav_data = self.convert_to_wav(audio_data)
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "http://0.0.0.0:8000/voice/process",
-                    files={"file": ("audio.wav", wav_data, "audio/wav")}
+                    "http://127.0.0.1:8005/voice/process",
+                    files={"file": ("audio.wav", wav_data, "audio/wav")},
+                    timeout=30.0
                 )
                 if response.status_code == 200:
                     res =  response.json()
                     print("time taken to process voice: ", time.time() - start)
-                    response=  VoiceRecognitionResponse(**res)
-                    self.transcription += response.transcription
-                    self.voice_user.append((response.userid, response.score))
+                    return  VoiceRecognitionResponse(**res)
+
                     
         except Exception as e:
             print("Error processing audio:", e)
@@ -71,31 +76,66 @@ class ProcessRequest:
             img_bytes = img_bytes_io.getvalue()
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "http://0.0.0.0:8003/api/v1/identify-face",
+                    "http://127.0.0.1:8000/api/v1/identify-face",
                     files={"image": ("image.jpg", img_bytes, "image/jpeg")}
                 )
                 if response.status_code == 200:
                     res = response.json()
                     print("time taken to process face: ", time.time() - start)
-                    result = FaceRecognitionResponse(userid=res[0], score=res[1])
-                    self.face_user.append((result.userid, result.score))
+                    return FaceRecognitionResponse(userid=res[0], score=res[1])
         except Exception as e:
             print("Error processing video:", e)
         
     
     async def process_input(self, audio_data, img_data):
+        voice_user = None
+        face_user = None
         if audio_data:
-            await self.process_audio(audio_data)
+            voice_user = await self.process_audio(audio_data)
         if img_data is not None:
-            await self.process_video(img_data)
+            face_user = await self.process_video(img_data)
 
-    async def __call__(self, audio_payload, img_payload, is_end:bool):
-        if is_end:
-            print("send transcription to RAG")
-            answer = await answer_user_query(GenerateRequest(user_id = uuid.uuid4(), question = self.transcription))
-            print("Answer from RAG: ", answer.generation)
+        if voice_user and face_user:
+            self.user_id = await self.identify_user(voice_user, face_user)
+        
 
-            return await generate_tts(answer.generation)
+
+
+    async def identify_user(self, voice_user:VoiceRecognitionResponse, face_user:FaceRecognitionResponse) -> str:
+        """
+        Identify the user based on voice and face recognition results.
+        """
+        if str(voice_user.userid) == face_user.userid:
+            return face_user.userid
+        
+        elif face_user.userid == 'Unknown' and not voice_user.userid:
+            print("USER VOICE AND FACE NOT IDENTIFIED")
+            uu = uuid.uuid4()
+            await add_voice_user(uu, self.audio)
+            await add_face_user(uu, self.image)
+            return str(uu)
+        elif not voice_user.userid:
+            print("VOICE NOT IDENTIFIED")
+            await add_voice_user(uuid.UUID(face_user.userid), self.audio)
+            return face_user.userid
+        elif face_user.userid == 'Unknown':
+            print("FACE NOT IDENTIFIED")
+            await add_face_user(voice_user.userid, self.image)
+            return str(voice_user.userid)
+        elif face_user.userid == str(voice_user.userid):
+            print("USER IDENTIFIED")
+            return face_user.userid
+        else:
+            if face_user.score < voice_user.score:
+                print("FACE USER IDENTIFIED")
+                await add_voice_user(uuid.UUID(face_user.userid), self.audio)
+                return face_user.userid
+            else:
+                print("VOICE USER IDENTIFIED")
+                await add_face_user(voice_user.userid, self.image) #type: ignore
+                return str(voice_user.userid)
+
+    async def __call__(self, audio_payload, img_payload):
         
         if not audio_payload and not img_payload:
             print("Missing audio and video payload; skipping this message.")
@@ -119,5 +159,39 @@ class ProcessRequest:
                 print("Error decoding video payload:", e)
 
 
+        # Convert audio bytes to UploadFile
+        audio_upload_file = None
+        if audio_data:
+            audio_upload_file = UploadFile(
+            filename="audio.wav",
+            file=BytesIO(audio_data),
+            )
+
+        # Convert image bytes to UploadFile
+        img_upload_file = None
+        if img is not None:
+            _, img_encoded = cv2.imencode('.jpg', img)
+            img_bytes = img_encoded.tobytes()
+            img_upload_file = UploadFile(
+            filename="image.jpg",
+            file=BytesIO(img_bytes),
+            )
+
+        if img_upload_file:
+            self.image = img_upload_file
+        if audio_upload_file:
+            self.audio = audio_upload_file
+
+        # Pass the converted UploadFile objects to process_input
         await self.process_input(audio_data, img)
         
+
+        if self.transcription != "":
+            print("send transcription to RAG")
+            answer = await answer_user_query(GenerateRequest(user_id = self.user_id if self.user_id else uuid.uuid4(), question = self.transcription))
+            print("Answer from RAG: ", answer.generation)
+
+            return await generate_tts(answer.generation)
+        else:
+            print("No transcription available")
+            return None

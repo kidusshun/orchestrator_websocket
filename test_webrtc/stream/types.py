@@ -18,3 +18,9 @@ class GenerateRequest(BaseModel):
 
 class RAGResponse(BaseModel):
     generation: str
+
+class CreateVoiceUserResponse(BaseModel):
+    user_id: UUID
+
+class CreateFaceUserResponse(BaseModel):
+    user_id: str
