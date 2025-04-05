@@ -55,6 +55,7 @@ class ProcessRequest:
                 )
                 if response.status_code == 200:
                     res =  response.json()
+                    
                     print("time taken to process voice: ", time.time() - start)
                     return  VoiceRecognitionResponse(**res)
 
@@ -92,9 +93,13 @@ class ProcessRequest:
         face_user = None
         if audio_data:
             voice_user = await self.process_audio(audio_data)
+            print(voice_user)
         if img_data is not None:
             face_user = await self.process_video(img_data)
-
+        
+        if voice_user:
+            self.transcription += voice_user.transcription
+        
         if voice_user and face_user:
             self.user_id = await self.identify_user(voice_user, face_user)
         
@@ -136,6 +141,7 @@ class ProcessRequest:
                 return str(voice_user.userid)
 
     async def __call__(self, audio_payload, img_payload):
+        print("transcription: ", self.transcription)
         
         if not audio_payload and not img_payload:
             print("Missing audio and video payload; skipping this message.")
@@ -188,8 +194,9 @@ class ProcessRequest:
 
         if self.transcription != "":
             print("send transcription to RAG")
-            answer = await answer_user_query(GenerateRequest(user_id = self.user_id if self.user_id else uuid.uuid4(), question = self.transcription))
+            answer = await answer_user_query(GenerateRequest(user_id = self.user_id if self.user_id else str(uuid.uuid4()), question = self.transcription))
             print("Answer from RAG: ", answer.generation)
+            self.transcription = ""
 
             return await generate_tts(answer.generation)
         else:
