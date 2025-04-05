@@ -5,7 +5,7 @@ import time
 import base64
 import wave
 import numpy as np
-import cv2
+# import cv2
 from PIL import Image
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter, Response
