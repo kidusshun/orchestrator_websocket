@@ -8,7 +8,7 @@ async def generate_tts(
     text: str,
 ):
     try:
-        url = "http://127.0.0.1:8005/voice/tts"
+        url = "http://127.0.0.1:8001/voice/tts"
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json={"text":text}, timeout=60.0)
         
@@ -34,7 +34,7 @@ async def answer_user_query(
 
 async def add_voice_user(id: uuid.UUID, audio: UploadFile):
     try:
-        url = "http://127.0.0.1:8005/voice/add_user"
+        url = "http://127.0.0.1:8001/voice/add_user"
         # Reset file pointer before sending
         await audio.seek(0)
         
@@ -50,7 +50,7 @@ async def add_voice_user(id: uuid.UUID, audio: UploadFile):
 
 async def add_face_user(id: uuid.UUID, image: UploadFile):
     try:
-        url = "http://127.0.0.1:8000/api/v1/embed"
+        url = "http://127.0.0.1:8000/api/v2/embed"
         # Reset file pointer before sending
         await image.seek(0)
         files = {"image": ("image.jpg", image.file, image.content_type)}
@@ -60,4 +60,21 @@ async def add_face_user(id: uuid.UUID, image: UploadFile):
 
         return CreateFaceUserResponse(user_id = response.json())
     except:
-        raise Exception("can't add face user")
+        print(f"Error adding face user {id}")
+        return None
+    
+
+async def update_face_user(id: uuid.UUID, image: UploadFile):
+    try:
+        url = "http://127.0.0.1:8000/api/v2/update"
+        # Reset file pointer before sending
+        await image.seek(0)
+        files = {"image": ("image.jpg", image.file, image.content_type)}
+        data = {"person_id": str(id)}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, files=files, data=data, timeout=60.0)
+
+        return CreateFaceUserResponse(user_id = response.json())
+    except:
+        print("Error updating face user {id}")
+        return None
