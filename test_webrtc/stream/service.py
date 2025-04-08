@@ -2,7 +2,7 @@ import base64
 import uuid
 import cv2
 import numpy as np
-from typing import Any
+from typing import Any, Optional
 import time
 import httpx
 import io
@@ -17,6 +17,12 @@ from io import BytesIO
 import websockets
 import asyncio
 import json
+import os
+from asyncio import Lock
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ProcessRequest:
     def __init__(self):
@@ -33,7 +39,10 @@ class ProcessRequest:
             "threshold": 0.5,
             "max_faces": 5
         }
-        self.face_rec_url = "ws://127.0.0.1:8000/api/v2/identify"
+        face_host = os.getenv("FACE_RECOGNITION_HOST")
+        face_port = os.getenv("FACE_RECOGNITION_PORT")
+        self.face_rec_url = f"ws://{face_host}:{face_port}/api/v2/identify"
+        self.ws_lock = Lock()
         
     async def _ensure_face_rec_connection(self):
         """Ensures the WebSocket connection for face recognition is active."""
@@ -45,6 +54,7 @@ class ProcessRequest:
             self.face_rec_ws = await websockets.connect(self.face_rec_url)
             print(f"Connected to Face Rec WebSocket at {self.face_rec_url}")
             await self.face_rec_ws.send(json.dumps(self.face_rec_config))
+            await asyncio.sleep(0.1)  # Brief pause after configuration
             print(f"Face Rec WebSocket configured: {self.face_rec_config}")
             return True
         except (websockets.exceptions.WebSocketException, ConnectionRefusedError, OSError) as e:
@@ -107,32 +117,35 @@ class ProcessRequest:
         if self.face_rec_ws is None:
              print("Cannot process video frame, WebSocket is None.")
              return
-
         try:
-            # 1. Encode Image
-            _, buffer = cv2.imencode('.jpg', img)
-            if buffer is None:
-                print("Error: cv2.imencode failed.")
-                return
-            
-            # debug_image_path = f"debug_frame_{int(time.time())}.jpg"
-            # cv2.imwrite(debug_image_path, img)
-            # print(f"Saved debug image to {debug_image_path}")
-            
-            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            async with self.ws_lock:  # Enforce sequential access
+                # Encode and send frame
+                _, buffer = cv2.imencode('.jpg', img)
+                if buffer is None:
+                    print("Error: cv2.imencode failed.")
+                    return
+                
+                # debug_image_path = f"debug_frame_{int(time.time())}.jpg"
+                # cv2.imwrite(debug_image_path, img)
+                # print(f"Saved debug image to {debug_image_path}")
+                image_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                message = json.dumps({
+                    "image": image_base64,
+                    "timestamp": time.time()
+                })
 
-            message = json.dumps({
-                "image": image_base64,
-                "timestamp": time.time()
-            })
+                await self.face_rec_ws.send(message)
+                
+                # Wait for response (now protected by lock)
+                response_str = await asyncio.wait_for(self.face_rec_ws.recv(), timeout=5.0)
+                response_data = json.loads(response_str)
+                if response_data.get("status") == "error":
+                    logger.error(f"Face recognition error: {response_data.get('error')}")
+                    return
 
-            await self.face_rec_ws.send(message)
-
-            response_str = await self.face_rec_ws.recv()
-            response_data = json.loads(response_str)
-
-            self.latest_face_rec_state = FaceRecognitionResponse(**response_data) 
-
+                self.latest_face_rec_state = FaceRecognitionResponse(**response_data) 
+                
         except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK) as e:
             print(f"Face Rec WebSocket connection closed during send/recv: {e}")
             self.face_rec_ws = None
@@ -140,7 +153,7 @@ class ProcessRequest:
         except json.JSONDecodeError as e:
             print(f"Failed to decode Face Rec JSON response: {e} - Response: {response_str}")
         except asyncio.TimeoutError:
-             print("Timeout waiting for face recognition response.")
+            print("Timeout waiting for face recognition response.")
         except Exception as e:
             print(f"Error during Face Rec WebSocket send/recv/process: {type(e).__name__}: {e}")
     
@@ -322,7 +335,12 @@ class ProcessRequest:
             print("Answer from RAG: ", answer.generation)
             self.transcription = ""
 
-            return await generate_tts(answer.generation)
+            start_time_tts = time.time()
+            response_tts = await generate_tts(answer.generation)
+            end_time_tts = time.time()
+            
+            print(f'Total TTS TIme: ' , end_time_tts - start_time_tts)
+            return response_tts
         else:
             print("No transcription available")
             return None

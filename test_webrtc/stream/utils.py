@@ -2,7 +2,12 @@ import httpx
 import requests
 from .types import RAGResponse, GenerateRequest, CreateVoiceUserResponse, CreateFaceUserResponse
 import uuid
+import os
 from fastapi import UploadFile
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 async def generate_tts(
     text: str,
@@ -34,7 +39,7 @@ async def answer_user_query(
 
 async def add_voice_user(id: uuid.UUID, audio: UploadFile):
     try:
-        url = "http://127.0.0.1:8001/voice/add_user"
+        url = "http://127.0.0.1:8005/voice/add_user"
         # Reset file pointer before sending
         await audio.seek(0)
         
@@ -49,32 +54,44 @@ async def add_voice_user(id: uuid.UUID, audio: UploadFile):
 
 
 async def add_face_user(id: uuid.UUID, image: UploadFile):
+    """Minimal face embedding consumer that returns response object or None"""
     try:
-        url = "http://127.0.0.1:8000/api/v2/embed"
+        host = os.getenv("FACE_RECOGNITION_HOST")
+        port = os.getenv("FACE_RECOGNITION_PORT")
+        url = f"http://{host}:{port}/api/v2/embed"
         # Reset file pointer before sending
         await image.seek(0)
         files = {"image": ("image.jpg", image.file, image.content_type)}
         data = {"person_id": str(id)}
         async with httpx.AsyncClient() as client:
             response = await client.post(url, files=files, data=data, timeout=60.0)
-
-        return CreateFaceUserResponse(user_id = response.json())
-    except:
-        print(f"Error adding face user {id}")
+            data = response.json()  
+            if response.status_code in (200, 201) and data.get("status") == "success":
+                return CreateFaceUserResponse(user_id=data["person_id"])
+            
+            logger.error(f"Embed failed for {id}: {data.get('message', 'Unknown error')}")
+            return None
+    except Exception as e:
+        logger.info(f"Error adding face user {id}")
         return None
-    
 
 async def update_face_user(id: uuid.UUID, image: UploadFile):
     try:
-        url = "http://127.0.0.1:8000/api/v2/update"
+        host = os.getenv("FACE_RECOGNITION_HOST")
+        port = os.getenv("FACE_RECOGNITION_PORT")
+        url = f"http://{host}:{port}/api/v2/update"
         # Reset file pointer before sending
         await image.seek(0)
         files = {"image": ("image.jpg", image.file, image.content_type)}
         data = {"person_id": str(id)}
         async with httpx.AsyncClient() as client:
             response = await client.post(url, files=files, data=data, timeout=60.0)
-
-        return CreateFaceUserResponse(user_id = response.json())
+            data = response.json()  
+            if response.status_code in (200, 201) and data.get("status") == "success":
+                return CreateFaceUserResponse(user_id=data["person_id"])
+            
+            logger.error(f"Embed failed for {id}: {data.get('message', 'Unknown error')}")
+            return None
     except:
         print("Error updating face user {id}")
         return None
