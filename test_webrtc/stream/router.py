@@ -13,7 +13,10 @@ from starlette.websockets import WebSocketState
 from .types import VoiceRecognitionResponse, FaceRecognitionResponse, GenerateRequest
 import uuid
 from .utils import answer_user_query, generate_tts
-import uuid, os, time, subprocess
+import uuid
+import os
+import time
+import subprocess
 
 from .service import ProcessRequest
 router = APIRouter(prefix="", tags=["voice"])
@@ -22,6 +25,7 @@ RHUBARB_PATH = os.path.join("rhubarb", "rhubarb.exe")
 
 # Track processing status
 isProcessing = False
+isProcessingVideo = False
 
 def convert_to_wav(audio_data: bytes, channels: int = 1, sampwidth: int = 2, framerate: int = 48000) -> bytes:
     """
@@ -189,4 +193,53 @@ async def websocket_media(websocket: WebSocket):
             await websocket.close()
         print("WebSocket closed")
     
+
+@router.websocket("/ws/img")
+async def websocket_img(websocket: WebSocket):
+    """
+    WebSocket endpoint that always expects a message with both audio and video.
+    Each message should be a JSON object:
+      {
+         "video": "<base64-encoded-video-data>"
+         "is_end": true/false
+      }
+    """
+
+    global isProcessingVideo
+
+    await websocket.accept()
+
+    try:
+        while True:
+            # Expect text messages (JSON format) with both audio and video keys.
+            message = await websocket.receive_text()
+            start = time.time()
+            if isProcessingVideo:
+                print("Already processing video, ignoring new request.")
+
+            else:
+                try:
+                    isProcessingVideo = True
+                    data = json.loads(message)
+                except Exception as e:
+                    isProcessingVideo = False
+                    print("Invalid JSON received:", e)
+                    continue
+
+                video_payload = data.get("video")
+                # try:
+                response = await request_handler.process_video(video_payload)
+                if response:
+                    end = time.time()
+                    print(f'Video process Total TIme: ', end - start)
+                    isProcessingVideo = False
+                else:
+                    isProcessingVideo = False
+
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    finally:
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.close()
+        print("WebSocket closed")
     

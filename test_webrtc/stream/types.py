@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List, Tuple, Optional
 from uuid import UUID
 
 class VoiceRecognitionResponse(BaseModel):
@@ -6,10 +7,20 @@ class VoiceRecognitionResponse(BaseModel):
     transcription: str
     score: float
 
+
+class Match(BaseModel):
+    person_id: str
+    confidence: Optional[float] = None
+    bbox: Optional[List[float]] = None
+    
 class FaceRecognitionResponse(BaseModel):
-    userid: str
-    score: float
-    is_new: bool
+   matches: List[Match]
+   face_detected: bool
+   processed_faces: int
+   status: str
+   tracked: Optional[List[str]] = []
+   lip_center: Optional[List[float]] = []
+   error: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
